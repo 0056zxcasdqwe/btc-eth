@@ -12,40 +12,27 @@ CHECK_INTERVAL = 20
 MIN_BUY_SELL_RATIO = 4.0
 MIN_SELL_BUY_RATIO = 4.0
 
-NEAR_LOWER = {
-    "15m": 0.12,
-    "5m": 0.10,
-    "3m": 0.08
-}
-NEAR_UPPER = {
-    "15m": 0.12,
-    "5m": 0.10,
-    "3m": 0.08
-}
+NEAR_LOWER = {"15m": 0.12, "5m": 0.10, "3m": 0.08}
+NEAR_UPPER = {"15m": 0.12, "5m": 0.10, "3m": 0.08}
 
 SIGNAL_COOLDOWN = 180
 PRICE_DIFF_LIMIT = 0.15
 BBW_RANGE_THRESHOLD = 2.0
 
-# 每个币种独立状态
 states = {
     "BTC-USDT": {
         "pending": deque(),
         "stats_3m": {"win": 0, "total": 0},
         "stats_5m": {"win": 0, "total": 0},
-        "last_long_price": 0,
-        "last_short_price": 0,
-        "last_long_time": 0,
-        "last_short_time": 0,
+        "last_long_price": 0, "last_short_price": 0,
+        "last_long_time": 0, "last_short_time": 0,
     },
     "ETH-USDT": {
         "pending": deque(),
         "stats_3m": {"win": 0, "total": 0},
         "stats_5m": {"win": 0, "total": 0},
-        "last_long_price": 0,
-        "last_short_price": 0,
-        "last_long_time": 0,
-        "last_short_time": 0,
+        "last_long_price": 0, "last_short_price": 0,
+        "last_long_time": 0, "last_short_time": 0,
     }
 }
 
@@ -103,9 +90,17 @@ def calculate_bollinger(df, period=20, std=2):
     df["lower"] = df["ma"] - std * df["std"]
     return df
 
-def get_bb_info(symbol, interval):
+def calculate_macd(df, fast=12, slow=26, signal=9):
+    exp1 = df["close"].ewm(span=fast, adjust=False).mean()
+    exp2 = df["close"].ewm(span=slow, adjust=False).mean()
+    dif = exp1 - exp2
+    dea = dif.ewm(span=signal, adjust=False).mean()
+    hist = dif - dea
+    return dif.iloc[-1], dea.iloc[-1], hist.iloc[-1], hist.iloc[-2]
+
+def get_bb_and_macd(symbol, interval):
     df = get_okx_klines(symbol, interval)
-    if df is None or len(df) < 30:
+    if df is None or len(df) < 35:
         return None
     df = calculate_bollinger(df)
     latest = df.iloc[-1]
@@ -117,15 +112,18 @@ def get_bb_info(symbol, interval):
     dist_upper = (upper - price) / price * 100 if price > 0 else 999
     bbw = (upper - lower) / mid * 100 if mid > 0 else 999
     is_ranging = bbw < BBW_RANGE_THRESHOLD
+
+    dif, dea, hist, prev_hist = calculate_macd(df)
+    golden_cross = prev_hist < 0 and hist >= 0
+    death_cross = prev_hist > 0 and hist <= 0
+
     return {
         "price": price,
-        "lower": lower,
-        "upper": upper,
-        "mid": mid,
-        "dist_lower": dist_lower,
-        "dist_upper": dist_upper,
-        "bbw": bbw,
-        "is_ranging": is_ranging
+        "lower": lower, "upper": upper, "mid": mid,
+        "dist_lower": dist_lower, "dist_upper": dist_upper,
+        "bbw": bbw, "is_ranging": is_ranging,
+        "dif": dif, "dea": dea, "hist": hist,
+        "golden_cross": golden_cross, "death_cross": death_cross
     }
 
 def check_pending_signals(symbol):
@@ -134,7 +132,6 @@ def check_pending_signals(symbol):
     current_price = get_current_price(symbol)
     if current_price is None:
         return
-
     remaining = deque()
     name = "BTC" if "BTC" in symbol else "ETH"
     for sig in state["pending"]:
@@ -144,32 +141,25 @@ def check_pending_signals(symbol):
         if not sig["checked_3m"] and elapsed >= 180:
             win = (current_price > sig["price"]) if sig["direction"] == "long" else (current_price < sig["price"])
             state["stats_3m"]["total"] += 1
-            if win:
-                state["stats_3m"]["win"] += 1
+            if win: state["stats_3m"]["win"] += 1
             sig["checked_3m"] = True
             rate = state["stats_3m"]["win"] / state["stats_3m"]["total"] * 100
             result = "成功 ✅" if win else "失败 ❌"
-            title = f"【3分钟验证】{name} {direction_text}信号"
-            content = f"**结果**：{result}\n**开仓价**：{sig['price']:.2f}\n**当前价**：{current_price:.2f}\n**3分钟成功率**：{rate:.1f}%（{state['stats_3m']['win']}/{state['stats_3m']['total']}）"
-            send_wechat(title, content)
+            send_wechat(f"【3分钟验证】{name} {direction_text}", f"**结果**：{result}\n开仓价：{sig['price']:.2f}\n当前价：{current_price:.2f}\n成功率：{rate:.1f}%")
             print(f">>> {name} 3分钟验证: {result}")
 
         if not sig["checked_5m"] and elapsed >= 300:
             win = (current_price > sig["price"]) if sig["direction"] == "long" else (current_price < sig["price"])
             state["stats_5m"]["total"] += 1
-            if win:
-                state["stats_5m"]["win"] += 1
+            if win: state["stats_5m"]["win"] += 1
             sig["checked_5m"] = True
             rate = state["stats_5m"]["win"] / state["stats_5m"]["total"] * 100
             result = "成功 ✅" if win else "失败 ❌"
-            title = f"【5分钟验证】{name} {direction_text}信号"
-            content = f"**结果**：{result}\n**开仓价**：{sig['price']:.2f}\n**当前价**：{current_price:.2f}\n**5分钟成功率**：{rate:.1f}%（{state['stats_5m']['win']}/{state['stats_5m']['total']}）"
-            send_wechat(title, content)
+            send_wechat(f"【5分钟验证】{name} {direction_text}", f"**结果**：{result}\n开仓价：{sig['price']:.2f}\n当前价：{current_price:.2f}\n成功率：{rate:.1f}%")
             print(f">>> {name} 5分钟验证: {result}")
 
         if not (sig["checked_3m"] and sig["checked_5m"]):
             remaining.append(sig)
-
     state["pending"] = remaining
 
 def get_success_rate_text(symbol):
@@ -180,14 +170,12 @@ def get_success_rate_text(symbol):
 
 def get_range_tag(r3, r5, r15):
     count = sum([r3, r5, r15])
-    if count == 3:
-        return "【超强震荡信号】"
-    elif count == 2:
-        return "【强震荡信号】"
+    if count == 3: return "【超强震荡信号】"
+    elif count == 2: return "【强震荡信号】"
     return ""
 
 print("=" * 50)
-print("BTC + ETH 合并监控已启动（任意两个周期满足即可）")
+print("BTC + ETH 合并监控已启动（布林 + MACD金叉死叉）")
 print("=" * 50)
 
 while True:
@@ -195,120 +183,132 @@ while True:
         for symbol in SYMBOLS:
             name = "BTC" if "BTC" in symbol else "ETH"
             state = states[symbol]
-
             check_pending_signals(symbol)
 
             ok_bids, ok_asks = get_okx_orderbook(symbol)
             buy_sell_ratio = ok_bids / ok_asks if ok_asks > 0 else 0
             sell_buy_ratio = ok_asks / ok_bids if ok_bids > 0 else 0
 
-            bb_15 = get_bb_info(symbol, "15m")
-            bb_5  = get_bb_info(symbol, "5m")
-            bb_3  = get_bb_info(symbol, "3m")
+            bb_15 = get_bb_and_macd(symbol, "15m")
+            bb_5  = get_bb_and_macd(symbol, "5m")
+            bb_3  = get_bb_and_macd(symbol, "3m")
 
             if bb_15 is None or bb_5 is None or bb_3 is None:
-                print(f"{name} 布林带数据获取失败，跳过")
+                print(f"{name} 数据获取失败，跳过")
                 continue
 
             price = bb_15["price"]
             now_str = datetime.now().strftime("%H:%M:%S")
             now_ts = time.time()
 
-            # 震荡判断
-            r15 = bb_15["is_ranging"]
-            r5  = bb_5["is_ranging"]
-            r3  = bb_3["is_ranging"]
+            # 震荡
+            r15, r5, r3 = bb_15["is_ranging"], bb_5["is_ranging"], bb_3["is_ranging"]
             range_tag = get_range_tag(r3, r5, r15)
 
-            # 接近下轨判断（任意两个）
+            # 布林接近条件（任意两个）
             near_lower_15 = bb_15["dist_lower"] < NEAR_LOWER["15m"] and price < bb_15["mid"]
             near_lower_5  = bb_5["dist_lower"] < NEAR_LOWER["5m"]
             near_lower_3  = bb_3["dist_lower"] < NEAR_LOWER["3m"]
             near_lower_count = sum([near_lower_15, near_lower_5, near_lower_3])
-            long_signal = (buy_sell_ratio >= MIN_BUY_SELL_RATIO) and near_lower_count >= 2
+            boll_long = (buy_sell_ratio >= MIN_BUY_SELL_RATIO) and near_lower_count >= 2
 
-            # 接近上轨判断（任意两个）
             near_upper_15 = bb_15["dist_upper"] < NEAR_UPPER["15m"] and price > bb_15["mid"]
             near_upper_5  = bb_5["dist_upper"] < NEAR_UPPER["5m"]
             near_upper_3  = bb_3["dist_upper"] < NEAR_UPPER["3m"]
             near_upper_count = sum([near_upper_15, near_upper_5, near_upper_3])
-            short_signal = (sell_buy_ratio >= MIN_SELL_BUY_RATIO) and near_upper_count >= 2
+            boll_short = (sell_buy_ratio >= MIN_SELL_BUY_RATIO) and near_upper_count >= 2
+
+            # MACD 金叉死叉
+            golden_list = []
+            death_list = []
+            if bb_3["golden_cross"]: golden_list.append("3m")
+            if bb_5["golden_cross"]: golden_list.append("5m")
+            if bb_15["golden_cross"]: golden_list.append("15m")
+            if bb_3["death_cross"]: death_list.append("3m")
+            if bb_5["death_cross"]: death_list.append("5m")
+            if bb_15["death_cross"]: death_list.append("15m")
+
+            macd_long = len(golden_list) > 0
+            macd_short = len(death_list) > 0
+
+            long_signal = boll_long or macd_long
+            short_signal = boll_short or macd_short
 
             rate_text = get_success_rate_text(symbol)
-            print(f"[{now_str}] {name}:{price:.2f} | 下轨:{bb_15['dist_lower']:.2f}% | 上轨:{bb_15['dist_upper']:.2f}% | 买/卖:{buy_sell_ratio:.2f} | 接近数:下{near_lower_count}/上{near_upper_count}")
+            print(f"[{now_str}] {name}:{price:.2f} | 买/卖:{buy_sell_ratio:.2f} | 布林接近:下{near_lower_count}/上{near_upper_count} | 金叉:{golden_list} 死叉:{death_list}")
             print(f"       {rate_text}")
 
-            # 做多信号
+            # 做多
             if long_signal:
                 price_diff = abs(price - state["last_long_price"]) / price * 100 if state["last_long_price"] > 0 else 999
                 if (now_ts - state["last_long_time"] > SIGNAL_COOLDOWN) and (price_diff > PRICE_DIFF_LIMIT):
-                    state["pending"].append({
-                        "time": datetime.now(),
-                        "price": price,
-                        "direction": "long",
-                        "checked_3m": False,
-                        "checked_5m": False
-                    })
-                    title = f"{range_tag}【{name}做多信号】事件合约看涨"
+                    state["pending"].append({"time": datetime.now(), "price": price, "direction": "long", "checked_3m": False, "checked_5m": False})
+                    
+                    source = []
+                    if boll_long: source.append("布林")
+                    if macd_long: source.append(f"MACD金叉({'+'.join(golden_list)})")
+                    source_text = "+".join(source)
+                    
+                    title = f"{range_tag}【{name}做多信号】{source_text}"
                     content = f"""
 **时间**：{now_str}
-**{name}当前价格**：{price:.2f}
+**{name}价格**：{price:.2f}
 
-**距离下轨**：
-- 15分钟：{bb_15['dist_lower']:.2f}% {'✓' if near_lower_15 else ''}
-- 5分钟：{bb_5['dist_lower']:.2f}% {'✓' if near_lower_5 else ''}
-- 3分钟：{bb_3['dist_lower']:.2f}% {'✓' if near_lower_3 else ''}
+**布林带接近下轨**：
+- 15m：{bb_15['dist_lower']:.2f}% {'✓' if near_lower_15 else ''}
+- 5m：{bb_5['dist_lower']:.2f}% {'✓' if near_lower_5 else ''}
+- 3m：{bb_3['dist_lower']:.2f}% {'✓' if near_lower_3 else ''}
 
-**欧意买/卖比**：{buy_sell_ratio:.2f}
-**满足周期数**：{near_lower_count}个
+**MACD金叉周期**：{', '.join(golden_list) if golden_list else '无'}
+**买/卖比**：{buy_sell_ratio:.2f}
 
 **历史成功率**：
 {rate_text}
 
-建议：最小仓位开【看涨】3分钟或5分钟事件合约
+建议：开【看涨】3分钟或5分钟事件合约
 """
                     send_wechat(title, content)
-                    print(f">>> {name}做多信号已推送！{range_tag}")
+                    print(f">>> {name}做多信号已推送！来源:{source_text}")
                     state["last_long_time"] = now_ts
                     state["last_long_price"] = price
                 else:
-                    print(f"（{name}做多信号被防重复过滤）")
+                    print(f"（{name}做多被防重复过滤）")
 
-            # 做空信号
+            # 做空
             if short_signal:
                 price_diff = abs(price - state["last_short_price"]) / price * 100 if state["last_short_price"] > 0 else 999
                 if (now_ts - state["last_short_time"] > SIGNAL_COOLDOWN) and (price_diff > PRICE_DIFF_LIMIT):
-                    state["pending"].append({
-                        "time": datetime.now(),
-                        "price": price,
-                        "direction": "short",
-                        "checked_3m": False,
-                        "checked_5m": False
-                    })
-                    title = f"{range_tag}【{name}做空信号】事件合约看跌"
+                    state["pending"].append({"time": datetime.now(), "price": price, "direction": "short", "checked_3m": False, "checked_5m": False})
+                    
+                    source = []
+                    if boll_short: source.append("布林")
+                    if macd_short: source.append(f"MACD死叉({'+'.join(death_list)})")
+                    source_text = "+".join(source)
+                    
+                    title = f"{range_tag}【{name}做空信号】{source_text}"
                     content = f"""
 **时间**：{now_str}
-**{name}当前价格**：{price:.2f}
+**{name}价格**：{price:.2f}
 
-**距离上轨**：
-- 15分钟：{bb_15['dist_upper']:.2f}% {'✓' if near_upper_15 else ''}
-- 5分钟：{bb_5['dist_upper']:.2f}% {'✓' if near_upper_5 else ''}
-- 3分钟：{bb_3['dist_upper']:.2f}% {'✓' if near_upper_3 else ''}
+**布林带接近上轨**：
+- 15m：{bb_15['dist_upper']:.2f}% {'✓' if near_upper_15 else ''}
+- 5m：{bb_5['dist_upper']:.2f}% {'✓' if near_upper_5 else ''}
+- 3m：{bb_3['dist_upper']:.2f}% {'✓' if near_upper_3 else ''}
 
-**欧意卖/买比**：{sell_buy_ratio:.2f}
-**满足周期数**：{near_upper_count}个
+**MACD死叉周期**：{', '.join(death_list) if death_list else '无'}
+**卖/买比**：{sell_buy_ratio:.2f}
 
 **历史成功率**：
 {rate_text}
 
-建议：最小仓位开【看跌】3分钟或5分钟事件合约
+建议：开【看跌】3分钟或5分钟事件合约
 """
                     send_wechat(title, content)
-                    print(f">>> {name}做空信号已推送！{range_tag}")
+                    print(f">>> {name}做空信号已推送！来源:{source_text}")
                     state["last_short_time"] = now_ts
                     state["last_short_price"] = price
                 else:
-                    print(f"（{name}做空信号被防重复过滤）")
+                    print(f"（{name}做空被防重复过滤）")
 
             if not long_signal and not short_signal:
                 print(f"{name} 暂无信号")
