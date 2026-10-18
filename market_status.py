@@ -118,8 +118,7 @@ def get_bb_and_macd(symbol, interval):
     death_cross = prev_hist > 0 and hist <= 0
 
     return {
-        "price": price,
-        "lower": lower, "upper": upper, "mid": mid,
+        "price": price, "lower": lower, "upper": upper, "mid": mid,
         "dist_lower": dist_lower, "dist_upper": dist_upper,
         "bbw": bbw, "is_ranging": is_ranging,
         "dif": dif, "dea": dea, "hist": hist,
@@ -145,7 +144,8 @@ def check_pending_signals(symbol):
             sig["checked_3m"] = True
             rate = state["stats_3m"]["win"] / state["stats_3m"]["total"] * 100
             result = "成功 ✅" if win else "失败 ❌"
-            send_wechat(f"【3分钟验证】{name} {direction_text}", f"**结果**：{result}\n开仓价：{sig['price']:.2f}\n当前价：{current_price:.2f}\n成功率：{rate:.1f}%")
+            send_wechat(f"【3分钟验证】{name} {direction_text}", 
+                        f"**结果**：{result}\n开仓价：{sig['price']:.2f}\n当前价：{current_price:.2f}\n3分钟成功率：{rate:.1f}%（{state['stats_3m']['win']}/{state['stats_3m']['total']}）")
             print(f">>> {name} 3分钟验证: {result}")
 
         if not sig["checked_5m"] and elapsed >= 300:
@@ -155,7 +155,8 @@ def check_pending_signals(symbol):
             sig["checked_5m"] = True
             rate = state["stats_5m"]["win"] / state["stats_5m"]["total"] * 100
             result = "成功 ✅" if win else "失败 ❌"
-            send_wechat(f"【5分钟验证】{name} {direction_text}", f"**结果**：{result}\n开仓价：{sig['price']:.2f}\n当前价：{current_price:.2f}\n成功率：{rate:.1f}%")
+            send_wechat(f"【5分钟验证】{name} {direction_text}", 
+                        f"**结果**：{result}\n开仓价：{sig['price']:.2f}\n当前价：{current_price:.2f}\n5分钟成功率：{rate:.1f}%（{state['stats_5m']['win']}/{state['stats_5m']['total']}）")
             print(f">>> {name} 5分钟验证: {result}")
 
         if not (sig["checked_3m"] and sig["checked_5m"]):
@@ -170,12 +171,12 @@ def get_success_rate_text(symbol):
 
 def get_range_tag(r3, r5, r15):
     count = sum([r3, r5, r15])
-    if count == 3: return "【超强震荡信号】"
-    elif count == 2: return "【强震荡信号】"
-    return ""
+    if count == 3: return "超强震荡"
+    elif count == 2: return "强震荡"
+    return "普通"
 
 print("=" * 50)
-print("BTC + ETH 合并监控已启动（布林 + MACD金叉死叉）")
+print("BTC + ETH 合并监控已启动（优化推荐版）")
 print("=" * 50)
 
 while True:
@@ -201,11 +202,10 @@ while True:
             now_str = datetime.now().strftime("%H:%M:%S")
             now_ts = time.time()
 
-            # 震荡
             r15, r5, r3 = bb_15["is_ranging"], bb_5["is_ranging"], bb_3["is_ranging"]
-            range_tag = get_range_tag(r3, r5, r15)
+            range_level = get_range_tag(r3, r5, r15)
 
-            # 布林接近条件（任意两个）
+            # 布林条件（任意两个）
             near_lower_15 = bb_15["dist_lower"] < NEAR_LOWER["15m"] and price < bb_15["mid"]
             near_lower_5  = bb_5["dist_lower"] < NEAR_LOWER["5m"]
             near_lower_3  = bb_3["dist_lower"] < NEAR_LOWER["3m"]
@@ -218,7 +218,7 @@ while True:
             near_upper_count = sum([near_upper_15, near_upper_5, near_upper_3])
             boll_short = (sell_buy_ratio >= MIN_SELL_BUY_RATIO) and near_upper_count >= 2
 
-            # MACD 金叉死叉
+            # MACD
             golden_list = []
             death_list = []
             if bb_3["golden_cross"]: golden_list.append("3m")
@@ -233,6 +233,12 @@ while True:
 
             long_signal = boll_long or macd_long
             short_signal = boll_short or macd_short
+
+            # 推荐开几分钟：强信号或有15m参与 → 推荐5分钟，否则推荐3分钟
+            def get_recommend(is_strong, has_15m):
+                if is_strong or has_15m:
+                    return "建议开5分钟"
+                return "建议开3分钟"
 
             rate_text = get_success_rate_text(symbol)
             print(f"[{now_str}] {name}:{price:.2f} | 买/卖:{buy_sell_ratio:.2f} | 布林接近:下{near_lower_count}/上{near_upper_count} | 金叉:{golden_list} 死叉:{death_list}")
@@ -249,26 +255,31 @@ while True:
                     if macd_long: source.append(f"MACD金叉({'+'.join(golden_list)})")
                     source_text = "+".join(source)
                     
-                    title = f"{range_tag}【{name}做多信号】{source_text}"
+                    is_strong = range_level in ["超强震荡", "强震荡"]
+                    has_15m = near_lower_15 or "15m" in golden_list
+                    recommend = get_recommend(is_strong, has_15m)
+                    
+                    title = f"【{name}做多】{recommend} | {range_level} | {source_text}"
                     content = f"""
 **时间**：{now_str}
-**{name}价格**：{price:.2f}
+**{name}当前价格**：{price:.2f}
 
-**布林带接近下轨**：
-- 15m：{bb_15['dist_lower']:.2f}% {'✓' if near_lower_15 else ''}
-- 5m：{bb_5['dist_lower']:.2f}% {'✓' if near_lower_5 else ''}
-- 3m：{bb_3['dist_lower']:.2f}% {'✓' if near_lower_3 else ''}
+**距离下轨**：
+- 15分钟：{bb_15['dist_lower']:.2f}% {'✓' if near_lower_15 else ''}
+- 5分钟：{bb_5['dist_lower']:.2f}% {'✓' if near_lower_5 else ''}
+- 3分钟：{bb_3['dist_lower']:.2f}% {'✓' if near_lower_3 else ''}
 
-**MACD金叉周期**：{', '.join(golden_list) if golden_list else '无'}
+**MACD金叉**：{', '.join(golden_list) if golden_list else '无'}
 **买/卖比**：{buy_sell_ratio:.2f}
+**震荡等级**：{range_level}
 
 **历史成功率**：
 {rate_text}
 
-建议：开【看涨】3分钟或5分钟事件合约
+**操作建议**：{recommend} 看涨事件合约（最小仓位）
 """
                     send_wechat(title, content)
-                    print(f">>> {name}做多信号已推送！来源:{source_text}")
+                    print(f">>> {name}做多信号已推送！{recommend}")
                     state["last_long_time"] = now_ts
                     state["last_long_price"] = price
                 else:
@@ -285,26 +296,31 @@ while True:
                     if macd_short: source.append(f"MACD死叉({'+'.join(death_list)})")
                     source_text = "+".join(source)
                     
-                    title = f"{range_tag}【{name}做空信号】{source_text}"
+                    is_strong = range_level in ["超强震荡", "强震荡"]
+                    has_15m = near_upper_15 or "15m" in death_list
+                    recommend = get_recommend(is_strong, has_15m)
+                    
+                    title = f"【{name}做空】{recommend} | {range_level} | {source_text}"
                     content = f"""
 **时间**：{now_str}
-**{name}价格**：{price:.2f}
+**{name}当前价格**：{price:.2f}
 
-**布林带接近上轨**：
-- 15m：{bb_15['dist_upper']:.2f}% {'✓' if near_upper_15 else ''}
-- 5m：{bb_5['dist_upper']:.2f}% {'✓' if near_upper_5 else ''}
-- 3m：{bb_3['dist_upper']:.2f}% {'✓' if near_upper_3 else ''}
+**距离上轨**：
+- 15分钟：{bb_15['dist_upper']:.2f}% {'✓' if near_upper_15 else ''}
+- 5分钟：{bb_5['dist_upper']:.2f}% {'✓' if near_upper_5 else ''}
+- 3分钟：{bb_3['dist_upper']:.2f}% {'✓' if near_upper_3 else ''}
 
-**MACD死叉周期**：{', '.join(death_list) if death_list else '无'}
+**MACD死叉**：{', '.join(death_list) if death_list else '无'}
 **卖/买比**：{sell_buy_ratio:.2f}
+**震荡等级**：{range_level}
 
 **历史成功率**：
 {rate_text}
 
-建议：开【看跌】3分钟或5分钟事件合约
+**操作建议**：{recommend} 看跌事件合约（最小仓位）
 """
                     send_wechat(title, content)
-                    print(f">>> {name}做空信号已推送！来源:{source_text}")
+                    print(f">>> {name}做空信号已推送！{recommend}")
                     state["last_short_time"] = now_ts
                     state["last_short_price"] = price
                 else:
